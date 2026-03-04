@@ -23,14 +23,17 @@ type Event struct {
 	ChatID    int64
 	UserID    int64
 	Text      string
+	TenantID  string
 }
 
 type Session struct {
 	ID           string
+	TenantID     string
+	AgentID      string
 	SystemPrompt string
 	Messages     []Message
 }
 
-func SessionID(channel string, chatID, userID int64) string {
-	return fmt.Sprintf("%s:%d:%d", channel, chatID, userID)
+func SessionID(tenantID, channel string, chatID, userID int64) string {
+	return fmt.Sprintf("%s:%s:%d:%d", tenantID, channel, chatID, userID)
 }

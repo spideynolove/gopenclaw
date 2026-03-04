@@ -63,3 +63,13 @@ func (m *Memory) Flush(ctx context.Context, sessionID string) error {
 	}
 	return nil
 }
+
+func (m *Memory) FlushSession(ctx context.Context, sessionID string) error {
+	_, err := m.db.ExecContext(ctx,
+		`DELETE FROM memories WHERE session_id = $1`,
+		sessionID)
+	if err != nil {
+		return fmt.Errorf("flush session memory: %w", err)
+	}
+	return nil
+}

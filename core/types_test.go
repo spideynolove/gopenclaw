@@ -8,8 +8,8 @@ import (
 )
 
 func TestSessionID(t *testing.T) {
-	id := core.SessionID("telegram", 123456, 789012)
-	want := "telegram:123456:789012"
+	id := core.SessionID("tenant1", "telegram", 123456, 789012)
+	want := "tenant1:telegram:123456:789012"
 	if id != want {
 		t.Errorf("got %q want %q", id, want)
 	}
