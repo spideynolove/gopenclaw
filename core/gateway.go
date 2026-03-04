@@ -10,6 +10,7 @@ type Gateway struct {
 	provider Provider
 	channel  ChannelAdapter
 	store    SessionStore
+	memory   MemoryBackend
 }
 
 func NewGateway(provider Provider, channel ChannelAdapter, store SessionStore) *Gateway {
@@ -17,6 +18,16 @@ func NewGateway(provider Provider, channel ChannelAdapter, store SessionStore) *
 		provider: provider,
 		channel:  channel,
 		store:    store,
+		memory:   nil,
+	}
+}
+
+func NewGatewayWithMemory(provider Provider, channel ChannelAdapter, store SessionStore, memory MemoryBackend) *Gateway {
+	return &Gateway{
+		provider: provider,
+		channel:  channel,
+		store:    store,
+		memory:   memory,
 	}
 }
 
@@ -69,5 +80,46 @@ func (g *Gateway) handle(ctx context.Context, evt Event) {
 	if err := g.channel.Send(ctx, evt, reply); err != nil {
 		slog.Error("failed to send reply", "sessionID", evt.SessionID, "err", err)
 		return
+	}
+
+	if NeedsCompaction(session.Messages, 128000) {
+		g.compact(ctx, evt.SessionID, session)
+	}
+}
+
+func (g *Gateway) compact(ctx context.Context, sessionID string, session *Session) {
+	if g.memory == nil {
+		return
+	}
+
+	systemPrompt := session.SystemPrompt
+	if systemPrompt == "" {
+		systemPrompt = "You are a helpful assistant. Summarize the key facts from the conversation."
+	}
+
+	compactSession := &Session{
+		ID:           sessionID,
+		SystemPrompt: systemPrompt + "\n\nSummarize the key facts from this conversation in 1-2 sentences.",
+		Messages:     session.Messages,
+	}
+
+	summary, err := g.provider.Complete(ctx, compactSession)
+	if err != nil {
+		slog.Error("compaction: provider complete failed", "sessionID", sessionID, "err", err)
+		return
+	}
+
+	mem := Memory{
+		SessionID: sessionID,
+		Content:   summary,
+		Embedding: nil,
+	}
+	if err := g.memory.Store(ctx, mem); err != nil {
+		slog.Error("compaction: store memory failed", "sessionID", sessionID, "err", err)
+		return
+	}
+
+	if err := g.memory.Flush(ctx, sessionID); err != nil {
+		slog.Error("compaction: flush memory failed", "sessionID", sessionID, "err", err)
 	}
 }
