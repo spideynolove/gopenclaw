@@ -9,15 +9,20 @@ import (
 )
 
 type Adapter struct {
-	bot *tgbotapi.BotAPI
+	bot      *tgbotapi.BotAPI
+	tenantID string
 }
 
 func New(token string) (*Adapter, error) {
+	return NewWithTenant(token, "default")
+}
+
+func NewWithTenant(token, tenantID string) (*Adapter, error) {
 	bot, err := tgbotapi.NewBotAPI(token)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create bot: %w", err)
 	}
-	return &Adapter{bot: bot}, nil
+	return &Adapter{bot: bot, tenantID: tenantID}, nil
 }
 
 func (a *Adapter) Start(ctx context.Context, out chan<- core.Event) error {
@@ -38,10 +43,11 @@ func (a *Adapter) Start(ctx context.Context, out chan<- core.Event) error {
 				}
 
 				evt := core.Event{
-					SessionID: core.SessionID("telegram", update.Message.Chat.ID, update.Message.From.ID),
+					SessionID: core.SessionID(a.tenantID, "telegram", update.Message.Chat.ID, update.Message.From.ID),
 					ChatID:    update.Message.Chat.ID,
 					UserID:    update.Message.From.ID,
 					Text:      update.Message.Text,
+					TenantID:  a.tenantID,
 				}
 
 				select {

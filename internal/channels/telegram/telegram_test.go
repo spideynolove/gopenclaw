@@ -7,8 +7,8 @@ import (
 )
 
 func TestSessionID(t *testing.T) {
-	sessionID := core.SessionID("telegram", 123456, 789012)
-	expected := "telegram:123456:789012"
+	sessionID := core.SessionID("tenant1", "telegram", 123456, 789012)
+	expected := "tenant1:telegram:123456:789012"
 	if sessionID != expected {
 		t.Errorf("SessionID() = %q, want %q", sessionID, expected)
 	}
