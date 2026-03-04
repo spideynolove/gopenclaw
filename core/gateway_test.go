@@ -2,7 +2,9 @@ package core
 
 import (
 	"context"
+	"sync"
 	"testing"
+	"time"
 )
 
 type mockStore struct {
@@ -91,6 +93,8 @@ type mockAdapter struct {
 	startErr error
 	sendErr  error
 	eventsChan chan Event
+	mu sync.Mutex
+	sent int
 }
 
 func newMockAdapter() *mockAdapter {
@@ -102,15 +106,36 @@ func newMockAdapter() *mockAdapter {
 	}
 }
 
+func (m *mockAdapter) closeEvents() {
+	if m.eventsChan != nil {
+		close(m.eventsChan)
+	}
+}
+
 func (m *mockAdapter) Start(ctx context.Context, out chan<- Event) error {
 	if m.startErr != nil {
 		return m.startErr
 	}
-	eventsChan := make(chan Event)
-	m.eventsChan = eventsChan
+	m.eventsChan = make(chan Event, 32)
 	go func() {
-		for evt := range eventsChan {
-			out <- evt
+		defer close(out)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case evt, ok := <-m.eventsChan:
+				if !ok {
+					return
+				}
+				select {
+				case out <- evt:
+					m.mu.Lock()
+					m.sent++
+					m.mu.Unlock()
+				case <-ctx.Done():
+					return
+				}
+			}
 		}
 	}()
 	return nil
@@ -128,7 +153,7 @@ func (m *mockAdapter) Send(ctx context.Context, evt Event, text string) error {
 }
 
 func TestGatewayRoutesSingleMessage(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	store := newMockStore()
@@ -137,9 +162,12 @@ func TestGatewayRoutesSingleMessage(t *testing.T) {
 
 	gateway := NewGateway(provider, adapter, store)
 
+	done := make(chan error, 1)
 	go func() {
-		gateway.Run(ctx)
+		done <- gateway.Run(ctx)
 	}()
+
+	time.Sleep(100 * time.Millisecond)
 
 	adapter.eventsChan <- Event{
 		SessionID: "test:123:456",
@@ -148,7 +176,15 @@ func TestGatewayRoutesSingleMessage(t *testing.T) {
 		Text:      "ping",
 	}
 
-	cancel()
+	time.Sleep(200 * time.Millisecond)
+
+	adapter.closeEvents()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("test timeout")
+	}
 
 	if len(adapter.sendCalls) != 1 {
 		t.Fatalf("expected 1 send call, got %d", len(adapter.sendCalls))
@@ -160,7 +196,7 @@ func TestGatewayRoutesSingleMessage(t *testing.T) {
 }
 
 func TestGatewayPersistsMessages(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	store := newMockStore()
@@ -169,19 +205,30 @@ func TestGatewayPersistsMessages(t *testing.T) {
 
 	gateway := NewGateway(provider, adapter, store)
 
+	done := make(chan error, 1)
 	go func() {
-		gateway.Run(ctx)
+		done <- gateway.Run(ctx)
 	}()
 
+	time.Sleep(100 * time.Millisecond)
+
 	sessionID := "test:123:456"
-	adapter.events <- Event{
+	adapter.eventsChan <- Event{
 		SessionID: sessionID,
 		ChatID:    123,
 		UserID:    456,
 		Text:      "ping",
 	}
 
-	cancel()
+	time.Sleep(200 * time.Millisecond)
+
+	adapter.closeEvents()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("test timeout")
+	}
 
 	if len(store.messages[sessionID]) != 2 {
 		t.Fatalf("expected 2 messages, got %d", len(store.messages[sessionID]))
