@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,8 +20,12 @@ import (
 	"github.com/spideynolove/gopenclaw/core"
 	"github.com/spideynolove/gopenclaw/internal/channels/discord"
 	"github.com/spideynolove/gopenclaw/internal/channels/telegram"
+	"github.com/spideynolove/gopenclaw/internal/crypto"
 	"github.com/spideynolove/gopenclaw/internal/memory/postgres"
+	"github.com/spideynolove/gopenclaw/internal/providers"
+	"github.com/spideynolove/gopenclaw/internal/providers/anthropic"
 	"github.com/spideynolove/gopenclaw/internal/providers/openai"
+	"github.com/spideynolove/gopenclaw/internal/security"
 	store "github.com/spideynolove/gopenclaw/store/postgres"
 )
 
@@ -46,6 +51,7 @@ func migrate(db *sqlx.DB) error {
 		"migrations/001_init.sql",
 		"migrations/002_memory.sql",
 		"migrations/003_tenants.sql",
+		"migrations/004_encrypted_secrets.sql",
 	}
 
 	for _, file := range files {
@@ -263,6 +269,8 @@ func main() {
 	telegramToken := mustEnv("TELEGRAM_TOKEN")
 	openaiAPIKey := mustEnv("OPENAI_API_KEY")
 	discordToken := os.Getenv("DISCORD_TOKEN")
+	anthropicAPIKey := os.Getenv("ANTHROPIC_API_KEY")
+	encryptionKeyStr := os.Getenv("ENCRYPTION_KEY")
 	defaultSystemPrompt := mustEnvOrDefault("DEFAULT_SYSTEM_PROMPT", "You are a helpful assistant.")
 
 	db, err := sqlx.Open("pgx", databaseURL)
@@ -286,7 +294,44 @@ func main() {
 	memoryBackend := postgres.New(db)
 	slog.Info("initialized stores", "prompt", defaultSystemPrompt)
 
-	provider := openai.New(openaiAPIKey, "gpt-4", "")
+	_ = security.New()
+	slog.Info("initialized input sanitizer")
+
+	var secretManager *crypto.SecretManager
+	if encryptionKeyStr != "" {
+		keyBytes, err := base64.StdEncoding.DecodeString(encryptionKeyStr)
+		if err != nil {
+			slog.Warn("failed to decode encryption key, using unencrypted mode", "err", err)
+		} else {
+			secretManager, err = crypto.NewSecretManager(keyBytes)
+			if err != nil {
+				slog.Warn("failed to initialize secret manager", "err", err)
+			} else {
+				slog.Info("initialized secret manager with AES-256-GCM")
+			}
+		}
+	} else {
+		slog.Warn("ENCRYPTION_KEY not set, secrets will not be encrypted")
+	}
+
+	openaiProvider := openai.New(openaiAPIKey, "gpt-4", "")
+	providerList := []core.Provider{openaiProvider}
+
+	if anthropicAPIKey != "" {
+		anthropicProvider := anthropic.New(anthropicAPIKey, "claude-3-5-sonnet-20241022")
+		providerList = append(providerList, anthropicProvider)
+		slog.Info("added anthropic provider to failover chain")
+	}
+
+	var provider core.Provider
+	if len(providerList) > 1 {
+		provider = providers.NewChain(providerList...)
+		slog.Info("initialized provider chain", "count", len(providerList))
+	} else {
+		provider = providerList[0]
+		slog.Info("using single provider (openai)")
+	}
+
 	telegramAdapter, err := telegram.New(telegramToken)
 	if err != nil {
 		slog.Error("failed to create telegram adapter", "err", err)
@@ -308,7 +353,7 @@ func main() {
 
 	server := NewServer(db, provider, sessionStore, memoryBackend, telegramAdapter, discordAdapter)
 
-	slog.Info("gopenclaw starting")
+	slog.Info("gopenclaw starting", "sanitizer_enabled", true, "encryption_enabled", secretManager != nil)
 
 	go func() {
 		<-sigChan
