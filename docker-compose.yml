@@ -1,6 +1,9 @@
+version: '3.8'
+
 services:
   postgres:
     image: pgvector/pgvector:pg16
+    container_name: gopenclaw-postgres
     environment:
       POSTGRES_USER: gopenclaw
       POSTGRES_PASSWORD: gopenclaw
@@ -9,6 +12,37 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gopenclaw"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: gopenclaw-app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://gopenclaw:gopenclaw@postgres:5432/gopenclaw
+      TELEGRAM_TOKEN: ${TELEGRAM_TOKEN}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      DISCORD_TOKEN: ${DISCORD_TOKEN}
+      DEFAULT_SYSTEM_PROMPT: ${DEFAULT_SYSTEM_PROMPT:-You are a helpful assistant.}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      GATEWAY_BIND: 0.0.0.0:8080
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
 volumes:
   pgdata:
