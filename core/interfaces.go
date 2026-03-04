@@ -23,3 +23,7 @@ type MemoryBackend interface {
 	Flush(ctx context.Context, sessionID string) error
 	FlushSession(ctx context.Context, sessionID string) error
 }
+
+type ToolExecutor interface {
+	Execute(ctx context.Context, call ToolCall, policy Policy) (ToolResult, error)
+}

@@ -34,6 +34,23 @@ type Session struct {
 	Messages     []Message
 }
 
+type ToolCall struct {
+	ID   string
+	Name string
+	Args map[string]any
+}
+
+type ToolResult struct {
+	CallID  string
+	Content string
+	IsError bool
+}
+
+type Policy struct {
+	Allow []string
+	Deny  []string
+}
+
 func SessionID(tenantID, channel string, chatID, userID int64) string {
 	return fmt.Sprintf("%s:%s:%d:%d", tenantID, channel, chatID, userID)
 }
