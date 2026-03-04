@@ -16,3 +16,9 @@ type SessionStore interface {
 	Append(ctx context.Context, sessionID string, msg Message) error
 	SetSystemPrompt(ctx context.Context, sessionID, prompt string) error
 }
+
+type MemoryBackend interface {
+	Search(ctx context.Context, sessionID, query string, embedding []float32) ([]Memory, error)
+	Store(ctx context.Context, m Memory) error
+	Flush(ctx context.Context, sessionID string) error
+}

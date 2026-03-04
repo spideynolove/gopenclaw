@@ -1,10 +1,21 @@
 package core
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 type Message struct {
 	Role    string
 	Content string
+}
+
+type Memory struct {
+	ID        int64
+	SessionID string
+	Content   string
+	Embedding []float32
+	CreatedAt time.Time
 }
 
 type Event struct {
