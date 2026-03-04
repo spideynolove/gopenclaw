@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 )
@@ -11,6 +12,7 @@ type Gateway struct {
 	channel  ChannelAdapter
 	store    SessionStore
 	memory   MemoryBackend
+	executor ToolExecutor
 }
 
 func NewGateway(provider Provider, channel ChannelAdapter, store SessionStore) *Gateway {
@@ -19,6 +21,7 @@ func NewGateway(provider Provider, channel ChannelAdapter, store SessionStore) *
 		channel:  channel,
 		store:    store,
 		memory:   nil,
+		executor: nil,
 	}
 }
 
@@ -28,6 +31,17 @@ func NewGatewayWithMemory(provider Provider, channel ChannelAdapter, store Sessi
 		channel:  channel,
 		store:    store,
 		memory:   memory,
+		executor: nil,
+	}
+}
+
+func NewGatewayFull(provider Provider, channel ChannelAdapter, store SessionStore, memory MemoryBackend, executor ToolExecutor) *Gateway {
+	return &Gateway{
+		provider: provider,
+		channel:  channel,
+		store:    store,
+		memory:   memory,
+		executor: executor,
 	}
 }
 
@@ -77,6 +91,11 @@ func (g *Gateway) handle(ctx context.Context, evt Event) {
 		return
 	}
 
+	if g.executor != nil && isToolCallResponse(reply) {
+		g.handleToolCalls(ctx, evt, session, reply)
+		return
+	}
+
 	if err := g.channel.Send(ctx, evt, reply); err != nil {
 		slog.Error("failed to send reply", "sessionID", evt.SessionID, "err", err)
 		return
@@ -122,4 +141,74 @@ func (g *Gateway) compact(ctx context.Context, sessionID string, session *Sessio
 	if err := g.memory.Flush(ctx, sessionID); err != nil {
 		slog.Error("compaction: flush memory failed", "sessionID", sessionID, "err", err)
 	}
+}
+
+func isToolCallResponse(response string) bool {
+	return len(response) > 0 && response[0] == '['
+}
+
+func (g *Gateway) handleToolCalls(ctx context.Context, evt Event, session *Session, toolCallsJSON string) {
+	toolResults := []ToolResult{}
+	calls := parseToolCalls(toolCallsJSON)
+
+	for _, call := range calls {
+		result, err := g.executor.Execute(ctx, call, Policy{})
+		if err != nil {
+			slog.Error("tool execution error", "sessionID", evt.SessionID, "toolName", call.Name, "err", err)
+			result = ToolResult{CallID: call.ID, Content: err.Error(), IsError: true}
+		}
+		toolResults = append(toolResults, result)
+	}
+
+	resultMsg := Message{Role: "user", Content: formatToolResults(toolResults)}
+	if err := g.store.Append(ctx, evt.SessionID, resultMsg); err != nil {
+		slog.Error("failed to append tool results message", "sessionID", evt.SessionID, "err", err)
+		return
+	}
+	session.Messages = append(session.Messages, resultMsg)
+
+	reply, err := g.provider.Complete(ctx, session)
+	if err != nil {
+		slog.Error("failed to complete after tool results", "sessionID", evt.SessionID, "err", err)
+		return
+	}
+
+	assistantMsg := Message{Role: "assistant", Content: reply}
+	if err := g.store.Append(ctx, evt.SessionID, assistantMsg); err != nil {
+		slog.Error("failed to append final assistant message", "sessionID", evt.SessionID, "err", err)
+		return
+	}
+
+	if err := g.channel.Send(ctx, evt, reply); err != nil {
+		slog.Error("failed to send reply", "sessionID", evt.SessionID, "err", err)
+		return
+	}
+
+	if NeedsCompaction(session.Messages, 128000) {
+		g.compact(ctx, evt.SessionID, session)
+	}
+}
+
+func parseToolCalls(jsonStr string) []ToolCall {
+	if jsonStr == "" || jsonStr[0] != '[' {
+		return []ToolCall{}
+	}
+
+	var calls []ToolCall
+	if err := json.Unmarshal([]byte(jsonStr), &calls); err != nil {
+		return []ToolCall{}
+	}
+	return calls
+}
+
+func formatToolResults(results []ToolResult) string {
+	data, err := json.Marshal(results)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+func (g *Gateway) SetExecutor(executor ToolExecutor) {
+	g.executor = executor
 }
